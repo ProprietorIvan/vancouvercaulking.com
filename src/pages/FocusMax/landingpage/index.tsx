@@ -13,12 +13,6 @@ import {
   CheckCircle,
 } from "lucide-react";
 import Image from "next/image";
-import {
-  GoogleMap,
-  useLoadScript,
-  Marker,
-  InfoWindow,
-} from "@react-google-maps/api";
 import type { StaticImageData } from "next/image";
 
 // Import logos directly
@@ -72,8 +66,7 @@ type Review = {
   rating: number;
 };
 
-// Define map related types
-// Use the correct library types from @react-google-maps/api
+// Map related types
 type Libraries = ("places" | "drawing" | "geometry" | "visualization")[];
 const libraries: Libraries = ["places", "geometry"];
 
@@ -113,17 +106,222 @@ const FocumaxLandingPage = () => {
     null
   );
   const [currentLocation, setCurrentLocation] = useState(defaultCenter);
+  const [mapLoaded, setMapLoaded] = useState(false);
+  const [mapError, setMapError] = useState(false);
 
-  // Map refs
-  const mapRef = useRef<google.maps.Map | null>(null);
-  const placesServiceRef = useRef<google.maps.places.PlacesService | null>(
-    null
-  );
+  // Map container refs
+  const mapContainer = useRef<HTMLDivElement>(null);
 
-  const { isLoaded, loadError } = useLoadScript({
-    googleMapsApiKey: "AIzaSyA3x0Q_p9ikD2EM3FrVj9Kb0TNH4M8NDGo",
-    libraries: libraries,
-  });
+  // Simple vanilla JS Google Maps implementation
+  useEffect(() => {
+    // Skip if map is already loaded
+    if (window.google?.maps) {
+      setMapLoaded(true);
+      return;
+    }
+
+    // Create and load the script directly
+    const script = document.createElement("script");
+    script.src = `https://maps.googleapis.com/maps/api/js?key=AIzaSyA3x0Q_p9ikD2EM3FrVj9Kb0TNH4M8NDGo&libraries=places,geometry`;
+    script.async = true;
+    script.defer = true;
+
+    script.onload = () => {
+      console.log("Google Maps script loaded successfully");
+      setMapLoaded(true);
+    };
+
+    script.onerror = () => {
+      console.error("Failed to load Google Maps script");
+      setMapError(true);
+    };
+
+    document.head.appendChild(script);
+
+    return () => {
+      // Clean up the script when component unmounts
+      if (document.head.contains(script)) {
+        document.head.removeChild(script);
+      }
+    };
+  }, []);
+
+  // Initialize map once script is loaded
+  useEffect(() => {
+    if (!mapLoaded || !mapContainer.current) return;
+
+    try {
+      // Clear the container first
+      mapContainer.current.innerHTML = "";
+
+      // Initialize the map
+      const map = new window.google.maps.Map(mapContainer.current, {
+        center: currentLocation,
+        zoom: 13,
+        mapTypeControl: false,
+        streetViewControl: false,
+        zoomControl: true,
+        fullscreenControl: true,
+      });
+
+      // Add user location marker
+      new window.google.maps.Marker({
+        position: currentLocation,
+        map,
+        icon: {
+          url: "https://maps.googleapis.com/maps/api/icon?name=blue-dot",
+        },
+      });
+
+      // Initialize service for searching
+      const placesService = new window.google.maps.places.PlacesService(map);
+
+      // Store map in window for debugging
+      window.pharmacyMap = map;
+      window.placesService = placesService;
+
+      // If we have pharmacies, display them
+      if (pharmacies.length > 0) {
+        pharmacies.forEach((pharmacy) => {
+          const marker = new window.google.maps.Marker({
+            position: pharmacy.location,
+            map,
+            icon: {
+              url: pharmacy.inStock
+                ? "https://maps.googleapis.com/maps/api/icon?name=green-dot"
+                : "https://maps.googleapis.com/maps/api/icon?name=red-dot",
+            },
+          });
+
+          marker.addListener("click", () => {
+            setSelectedPharmacy(pharmacy);
+
+            const infoWindow = new window.google.maps.InfoWindow({
+              content: `
+                <div style="padding: 10px;">
+                  <h4 style="font-weight: bold; margin: 0 0 5px 0;">${
+                    pharmacy.name
+                  }</h4>
+                  <p style="font-size: 14px; margin: 0 0 5px 0;">${
+                    pharmacy.address
+                  }</p>
+                  <p style="font-size: 14px; margin: 0;">
+                    ${
+                      pharmacy.inStock
+                        ? '<span style="color: green;">В наличии</span>'
+                        : '<span style="color: red;">Нет в наличии</span>'
+                    }
+                  </p>
+                </div>
+              `,
+            });
+
+            infoWindow.open(map, marker);
+          });
+        });
+      }
+    } catch (error) {
+      console.error("Error initializing map:", error);
+      setMapError(true);
+    }
+  }, [mapLoaded, currentLocation, pharmacies]);
+
+  // Function to search for pharmacies
+  const handlePharmacySearch = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+
+    if (!mapLoaded || !address) return;
+
+    try {
+      // Use geocoder to convert address to coordinates
+      const geocoder = new window.google.maps.Geocoder();
+
+      geocoder.geocode({ address }, (results, status) => {
+        if (
+          status === window.google.maps.GeocoderStatus.OK &&
+          results &&
+          results[0]
+        ) {
+          const location = {
+            lat: results[0].geometry.location.lat(),
+            lng: results[0].geometry.location.lng(),
+          };
+
+          setCurrentLocation(location);
+
+          // Get the map instance from window
+          const map = window.pharmacyMap;
+          if (map) {
+            map.setCenter(location);
+          }
+
+          // Search for nearby pharmacies
+          const placesService = window.placesService;
+          if (placesService) {
+            placesService.nearbySearch(
+              {
+                location,
+                radius: 3000, // 3km radius
+                type: "pharmacy",
+              },
+              (results, status) => {
+                if (
+                  status === window.google.maps.places.PlacesServiceStatus.OK &&
+                  results
+                ) {
+                  // Transform results to our pharmacy type
+                  const pharmaciesFound: Pharmacy[] = results.map(
+                    (place, index) => ({
+                      id: place.place_id || `pharmacy-${index}`,
+                      name: place.name || "Аптека",
+                      address: place.vicinity || "Адрес не указан",
+                      distance: "",
+                      inStock: Math.random() > 0.3, // Random availability
+                      location: {
+                        lat: place.geometry?.location?.lat() || 0,
+                        lng: place.geometry?.location?.lng() || 0,
+                      },
+                    })
+                  );
+
+                  // Calculate distances
+                  pharmaciesFound.forEach((pharmacy) => {
+                    if (window.google.maps.geometry) {
+                      const distance =
+                        window.google.maps.geometry.spherical.computeDistanceBetween(
+                          new window.google.maps.LatLng(
+                            location.lat,
+                            location.lng
+                          ),
+                          new window.google.maps.LatLng(
+                            pharmacy.location.lat,
+                            pharmacy.location.lng
+                          )
+                        );
+
+                      pharmacy.distance = `${(distance / 1000).toFixed(1)} км`;
+                    }
+                  });
+
+                  setPharmacies(pharmaciesFound);
+                }
+              }
+            );
+          }
+        } else {
+          console.error("Geocoding failed:", status);
+          alert(
+            "Не удалось найти указанный адрес. Пожалуйста, уточните запрос."
+          );
+        }
+      });
+    } catch (error) {
+      console.error("Error searching for pharmacies:", error);
+      alert(
+        "Произошла ошибка при поиске аптек. Пожалуйста, попробуйте еще раз."
+      );
+    }
+  };
 
   // Update logo paths in the marketplaces array
   const marketplaces: Marketplace[] = [
@@ -239,158 +437,6 @@ const FocumaxLandingPage = () => {
         [marketId]: numValue,
       });
     }
-  };
-
-  // Handle map load
-  const onMapLoad = (map: google.maps.Map) => {
-    mapRef.current = map;
-    const placesService = new google.maps.places.PlacesService(map);
-    placesServiceRef.current = placesService;
-  };
-
-  // Handle pharmacy search with Google Maps API
-  const handlePharmacySearch = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-
-    if (!isLoaded || !placesServiceRef.current || !address) return;
-
-    try {
-      // Use the Geocoding API to convert address to coordinates
-      const geocoder = new google.maps.Geocoder();
-
-      geocoder.geocode({ address }, (results, status) => {
-        if (status === google.maps.GeocoderStatus.OK && results && results[0]) {
-          const location = {
-            lat: results[0].geometry.location.lat(),
-            lng: results[0].geometry.location.lng(),
-          };
-
-          setCurrentLocation(location);
-
-          // Search for pharmacies near the location
-          if (placesServiceRef.current) {
-            placesServiceRef.current.nearbySearch(
-              {
-                location,
-                radius: 2000, // 2 km radius
-                type: "pharmacy",
-              },
-              (results, status) => {
-                if (
-                  status === google.maps.places.PlacesServiceStatus.OK &&
-                  results
-                ) {
-                  // Transform results to our Pharmacy type
-                  const nearbyPharmacies: Pharmacy[] = results.map(
-                    (place, index) => ({
-                      id: place.place_id || `pharmacy-${index}`,
-                      name: place.name || "Аптека",
-                      address: place.vicinity || "Адрес не указан",
-                      distance: "",
-                      inStock: Math.random() > 0.3, // Randomly set in stock status (you'd use real data in production)
-                      location: {
-                        lat: place.geometry?.location?.lat() || 0,
-                        lng: place.geometry?.location?.lng() || 0,
-                      },
-                    })
-                  );
-
-                  // Calculate distance for each pharmacy
-                  nearbyPharmacies.forEach((pharmacy) => {
-                    const pharmacyLocation = new google.maps.LatLng(
-                      pharmacy.location.lat,
-                      pharmacy.location.lng
-                    );
-
-                    const userLocation = new google.maps.LatLng(
-                      location.lat,
-                      location.lng
-                    );
-
-                    // Use geometry library to calculate distance
-                    if (google.maps.geometry) {
-                      const distance =
-                        google.maps.geometry.spherical.computeDistanceBetween(
-                          userLocation,
-                          pharmacyLocation
-                        );
-
-                      pharmacy.distance = `${(distance / 1000).toFixed(1)} км`;
-                    }
-                  });
-
-                  setPharmacies(nearbyPharmacies);
-                }
-              }
-            );
-          }
-        } else {
-          console.error("Geocoding failed");
-        }
-      });
-    } catch (error) {
-      console.error("Error searching for pharmacies:", error);
-    }
-  };
-
-  // Add this section to the pharmacy finder modal
-  const renderMap = () => {
-    if (loadError) return <div>Ошибка загрузки карты</div>;
-    if (!isLoaded) return <div>Загрузка карты...</div>;
-
-    return (
-      <div className="mt-6 h-[400px] w-full rounded-lg overflow-hidden">
-        <GoogleMap
-          mapContainerStyle={mapContainerStyle}
-          zoom={13}
-          center={currentLocation}
-          options={mapOptions}
-          onLoad={onMapLoad}
-        >
-          {/* User location marker */}
-          <Marker
-            position={currentLocation}
-            icon={{
-              url: "https://maps.google.com/mapfiles/ms/icons/blue-dot.png",
-            }}
-          />
-
-          {/* Pharmacy markers */}
-          {pharmacies.map((pharmacy) => (
-            <Marker
-              key={pharmacy.id}
-              position={pharmacy.location}
-              onClick={() => setSelectedPharmacy(pharmacy)}
-              icon={{
-                url: pharmacy.inStock
-                  ? "https://maps.google.com/mapfiles/ms/icons/green-dot.png"
-                  : "https://maps.google.com/mapfiles/ms/icons/red-dot.png",
-              }}
-            />
-          ))}
-
-          {/* Info window for selected pharmacy */}
-          {selectedPharmacy && (
-            <InfoWindow
-              position={selectedPharmacy.location}
-              onCloseClick={() => setSelectedPharmacy(null)}
-            >
-              <div className="p-2">
-                <h4 className="font-bold">{selectedPharmacy.name}</h4>
-                <p className="text-sm">{selectedPharmacy.address}</p>
-                <p className="text-sm mt-1">
-                  {selectedPharmacy.inStock ? (
-                    <span className="text-green-600">В наличии</span>
-                  ) : (
-                    <span className="text-red-600">Нет в наличии</span>
-                  )}
-                </p>
-              </div>
-            </InfoWindow>
-          )}
-        </GoogleMap>
-      </div>
-    );
   };
 
   return (
@@ -1010,13 +1056,6 @@ const FocumaxLandingPage = () => {
             </p>
 
             <div className="bg-gray-50 p-6 rounded-xl shadow-sm">
-              <div className="bg-yellow-100 border-l-4 border-yellow-500 p-4 mb-6">
-                <p className="text-yellow-700">
-                  <strong>Для целей разработки!</strong> Карта работает только
-                  на продакшен-версии с правильно настроенным API.
-                </p>
-              </div>
-
               <form onSubmit={handlePharmacySearch} className="mb-6">
                 <div className="flex max-w-xl mx-auto">
                   <input
@@ -1036,77 +1075,34 @@ const FocumaxLandingPage = () => {
                 </div>
               </form>
 
-              {/* Always render the map */}
-              <div className="mt-6 h-[500px] w-full rounded-lg overflow-hidden shadow-md">
-                {!isLoaded ? (
-                  <div className="w-full h-full flex items-center justify-center bg-gray-100">
-                    <div className="text-gray-500">Загрузка карты...</div>
+              {/* The map container */}
+              <div
+                ref={mapContainer}
+                id="pharmacy-map"
+                className="h-[500px] w-full rounded-lg overflow-hidden shadow-md mb-6"
+              >
+                {!mapLoaded && !mapError && (
+                  <div className="h-full w-full flex items-center justify-center bg-gray-100">
+                    <div className="text-gray-600">Загрузка карты...</div>
                   </div>
-                ) : loadError ? (
-                  <div className="w-full h-full flex items-center justify-center bg-gray-100">
-                    <div className="text-red-500">
-                      Ошибка загрузки карты. Пожалуйста, проверьте подключение к
-                      интернету.
+                )}
+
+                {mapError && (
+                  <div className="h-full w-full flex flex-col items-center justify-center bg-gray-100 p-4">
+                    <div className="text-red-600 mb-2 font-bold">
+                      Ошибка загрузки карты
+                    </div>
+                    <div className="text-gray-600 text-center">
+                      Пожалуйста, проверьте подключение к интернету или
+                      попробуйте позже.
                     </div>
                   </div>
-                ) : (
-                  <GoogleMap
-                    mapContainerStyle={{ width: "100%", height: "100%" }}
-                    zoom={13}
-                    center={currentLocation}
-                    options={mapOptions}
-                    onLoad={onMapLoad}
-                  >
-                    {/* User location marker */}
-                    <Marker
-                      position={currentLocation}
-                      icon={{
-                        url: "https://maps.google.com/mapfiles/ms/icons/blue-dot.png",
-                      }}
-                    />
-
-                    {/* Pharmacy markers */}
-                    {pharmacies.map((pharmacy) => (
-                      <Marker
-                        key={pharmacy.id}
-                        position={pharmacy.location}
-                        onClick={() => setSelectedPharmacy(pharmacy)}
-                        icon={{
-                          url: pharmacy.inStock
-                            ? "https://maps.google.com/mapfiles/ms/icons/green-dot.png"
-                            : "https://maps.google.com/mapfiles/ms/icons/red-dot.png",
-                        }}
-                      />
-                    ))}
-
-                    {/* Info window for selected pharmacy */}
-                    {selectedPharmacy && (
-                      <InfoWindow
-                        position={selectedPharmacy.location}
-                        onCloseClick={() => setSelectedPharmacy(null)}
-                      >
-                        <div className="p-2">
-                          <h4 className="font-bold">{selectedPharmacy.name}</h4>
-                          <p className="text-sm">{selectedPharmacy.address}</p>
-                          <p className="text-sm mt-1">
-                            {selectedPharmacy.inStock ? (
-                              <span className="text-green-600">В наличии</span>
-                            ) : (
-                              <span className="text-red-600">
-                                Нет в наличии
-                              </span>
-                            )}
-                          </p>
-                        </div>
-                      </InfoWindow>
-                    )}
-                  </GoogleMap>
                 )}
               </div>
 
               {/* Pharmacy list */}
               {pharmacies.length > 0 && (
-                <div className="mt-8">
+                <div className="mt-4">
                   <h4 className="font-semibold text-gray-900 text-lg mb-4">
                     Найдено аптек: {pharmacies.length}
                   </h4>
@@ -1121,7 +1117,11 @@ const FocumaxLandingPage = () => {
                         }`}
                         onClick={() => {
                           setSelectedPharmacy(pharmacy);
-                          mapRef.current?.panTo(pharmacy.location);
+
+                          if (window.pharmacyMap) {
+                            window.pharmacyMap.setCenter(pharmacy.location);
+                            window.pharmacyMap.setZoom(15);
+                          }
                         }}
                       >
                         <div className="flex justify-between">
@@ -1156,7 +1156,7 @@ const FocumaxLandingPage = () => {
           </div>
         </section>
 
-        {/* Pharmacy Finder Modal - Keep this for the button in the header */}
+        {/* Pharmacy Modal - minimal version with direct DOM access */}
         {showPharmacyFinder && (
           <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center">
             <div className="bg-white rounded-xl p-6 max-w-4xl w-full max-h-[90vh] overflow-y-auto">
@@ -1188,13 +1188,35 @@ const FocumaxLandingPage = () => {
                 </div>
               </form>
 
-              {/* Render the map */}
-              {renderMap()}
+              {/* The modal map container */}
+              <div
+                id="modal-pharmacy-map"
+                className="h-[300px] w-full rounded-lg overflow-hidden shadow-md mb-6"
+                style={{ background: "#f0f0f0" }}
+              >
+                {!mapLoaded && !mapError && (
+                  <div className="h-full w-full flex items-center justify-center">
+                    <div className="text-gray-600">Загрузка карты...</div>
+                  </div>
+                )}
 
-              {/* Pharmacy list */}
+                {mapError && (
+                  <div className="h-full w-full flex flex-col items-center justify-center p-4">
+                    <div className="text-red-600 mb-2 font-bold">
+                      Ошибка загрузки карты
+                    </div>
+                    <div className="text-gray-600 text-center">
+                      Пожалуйста, проверьте подключение к интернету или
+                      попробуйте позже.
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Modal Pharmacy list */}
               {pharmacies.length > 0 && (
-                <div className="mt-6 space-y-4">
-                  <h4 className="font-semibold text-gray-900">
+                <div className="mt-4">
+                  <h4 className="font-semibold text-gray-900 mb-4">
                     Найдено аптек: {pharmacies.length}
                   </h4>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -1208,7 +1230,11 @@ const FocumaxLandingPage = () => {
                         }`}
                         onClick={() => {
                           setSelectedPharmacy(pharmacy);
-                          mapRef.current?.panTo(pharmacy.location);
+
+                          if (window.pharmacyMap) {
+                            window.pharmacyMap.setCenter(pharmacy.location);
+                            window.pharmacyMap.setZoom(15);
+                          }
                         }}
                       >
                         <div className="flex justify-between">
@@ -1262,5 +1288,14 @@ const FocumaxLandingPage = () => {
     </>
   );
 };
+
+// Declare the window interface to avoid TypeScript errors
+declare global {
+  interface Window {
+    google: any;
+    pharmacyMap: any;
+    placesService: any;
+  }
+}
 
 export default FocumaxLandingPage;
