@@ -15,6 +15,15 @@ import {
 import Image from "next/image";
 import type { StaticImageData } from "next/image";
 
+// Add Google Maps type declarations
+declare global {
+  interface Window {
+    google: typeof google;
+    pharmacyMap: google.maps.Map;
+    placesService: google.maps.places.PlacesService;
+  }
+}
+
 // Import logos directly
 import wildberriesLogo from "../../../../public/logos/wildberries.png";
 import ozonLogo from "../../../../public/logos/ozon.png";
@@ -236,47 +245,48 @@ const FocumaxLandingPage = () => {
       // Use geocoder to convert address to coordinates
       const geocoder = new window.google.maps.Geocoder();
 
-      geocoder.geocode({ address }, (results, status) => {
-        if (
-          status === window.google.maps.GeocoderStatus.OK &&
-          results &&
-          results[0]
-        ) {
-          const location = {
-            lat: results[0].geometry.location.lat(),
-            lng: results[0].geometry.location.lng(),
-          };
+      geocoder.geocode(
+        { address },
+        (
+          results: google.maps.GeocoderResult[] | null,
+          status: google.maps.GeocoderStatus
+        ) => {
+          if (
+            status === window.google.maps.GeocoderStatus.OK &&
+            results &&
+            results[0]
+          ) {
+            const location = {
+              lat: results[0].geometry.location.lat(),
+              lng: results[0].geometry.location.lng(),
+            };
 
-          setCurrentLocation(location);
+            setCurrentLocation(location);
 
-          // Get the map instance from window
-          const map = window.pharmacyMap;
-          if (map) {
-            map.setCenter(location);
-          }
+            // Search for pharmacies near the location
+            const request = {
+              location: results[0].geometry.location,
+              radius: 5000,
+              type: "pharmacy",
+            };
 
-          // Search for nearby pharmacies
-          const placesService = window.placesService;
-          if (placesService) {
-            placesService.nearbySearch(
-              {
-                location,
-                radius: 3000, // 3km radius
-                type: "pharmacy",
-              },
-              (results, status) => {
+            window.placesService.nearbySearch(
+              request,
+              (
+                results: google.maps.places.PlaceResult[] | null,
+                status: google.maps.places.PlacesServiceStatus
+              ) => {
                 if (
-                  status === window.google.maps.places.PlacesServiceStatus.OK &&
+                  status === google.maps.places.PlacesServiceStatus.OK &&
                   results
                 ) {
-                  // Transform results to our pharmacy type
-                  const pharmaciesFound: Pharmacy[] = results.map(
-                    (place, index) => ({
+                  const pharmacyResults = results.map(
+                    (place: google.maps.places.PlaceResult, index: number) => ({
                       id: place.place_id || `pharmacy-${index}`,
-                      name: place.name || "Аптека",
-                      address: place.vicinity || "Адрес не указан",
-                      distance: "",
-                      inStock: Math.random() > 0.3, // Random availability
+                      name: place.name || "Unknown Pharmacy",
+                      address: place.vicinity || "Address unknown",
+                      distance: "Calculating...",
+                      inStock: Math.random() > 0.3, // Simulated stock status
                       location: {
                         lat: place.geometry?.location?.lat() || 0,
                         lng: place.geometry?.location?.lng() || 0,
@@ -285,7 +295,7 @@ const FocumaxLandingPage = () => {
                   );
 
                   // Calculate distances
-                  pharmaciesFound.forEach((pharmacy) => {
+                  pharmacyResults.forEach((pharmacy) => {
                     if (window.google.maps.geometry) {
                       const distance =
                         window.google.maps.geometry.spherical.computeDistanceBetween(
@@ -303,18 +313,18 @@ const FocumaxLandingPage = () => {
                     }
                   });
 
-                  setPharmacies(pharmaciesFound);
+                  setPharmacies(pharmacyResults);
                 }
               }
             );
+          } else {
+            console.error("Geocoding failed:", status);
+            alert(
+              "Не удалось найти указанный адрес. Пожалуйста, уточните запрос."
+            );
           }
-        } else {
-          console.error("Geocoding failed:", status);
-          alert(
-            "Не удалось найти указанный адрес. Пожалуйста, уточните запрос."
-          );
         }
-      });
+      );
     } catch (error) {
       console.error("Error searching for pharmacies:", error);
       alert(
@@ -1288,14 +1298,5 @@ const FocumaxLandingPage = () => {
     </>
   );
 };
-
-// Declare the window interface to avoid TypeScript errors
-declare global {
-  interface Window {
-    google: any;
-    pharmacyMap: any;
-    placesService: any;
-  }
-}
 
 export default FocumaxLandingPage;
